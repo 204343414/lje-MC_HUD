@@ -1,0 +1,12 @@
+# ============================================================
+#   MCHUD - Minecraft style HUD for Garry's Mod
+#   LJE script package
+# ============================================================
+[script]
+name = "mchud"
+version = "1.0.0"
+author = "ba"
+url = "https://github.com/YOURNAME/mchud"
+dependencies = [
+    "Eyoko1.ljeutil"
+]
