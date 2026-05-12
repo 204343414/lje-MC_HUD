@@ -1,9 +1,26 @@
 -- ================================================================
---   MCHUD v1.2  -  Minecraft style HUD for Garry's Mod (LJE)
+--   MCHUD v1.4  -  Minecraft style HUD for Garry's Mod (LJE)
 --
 --   Author : ba   (with assist from Arena.ai Agent Mode)
 --   Target : LJE + ljeutil environment (Eyoko1.ljeutil)
 --   License: do whatever, share with friends, don't sell
+--
+--   v1.4 changes vs v1.3:
+--     * Buttons now use widgets.png sprites (true MC look + hover)
+--     * Button text: white normal, light yellow #FFFFBE hover (Mojang)
+--     * Button size 300x40 -> 600x60 (matches MC HUD sc=3 scale)
+--     * Respawn button now simulates +attack click instead of "kill"
+--       (real GMod respawn mechanism, less suspicious to anti-cheats)
+--     * Removed gmod_language detection (was unreliable). English fixed.
+--     * DEBUG default to false --- public release should be quiet
+--
+--   v1.3 changes vs v1.2:
+--     * Full Minecraft-style death screen with two clickable buttons
+--       (Respawn / Title Screen), MC-faithful red overlay & big text
+--     * Auto language detection via gmod_language cvar
+--       (Chinese vs English; defaults to Chinese)
+--     * Cursor management: shown on death, hidden on respawn
+--     * No vgui dependency (pure surface.* + gui.MouseX/Y)
 --
 --   v1.2 changes vs v1.1:
 --     · Dual-path rendering: ljeutil/render PRIMARY + HUDPaint BACKUP
@@ -22,7 +39,7 @@
 -- ================================================================
 
 -- ---------------- 0. CONFIG ----------------
-local DEBUG = true   -- set to false for "quiet" public release
+local DEBUG = false  -- v1.4: default to quiet for public release
 local function dbg(...)
     if not DEBUG then return end
     local parts = {}
@@ -32,7 +49,7 @@ local function dbg(...)
     lje.con_print("[MCHUD] " .. table.concat(parts, " "))
 end
 
-dbg("v1.2 main.lua starting")
+dbg("v1.4 main.lua starting")
 
 -- ---------------- 1. NATIVE HOOK BYPASS ----------------
 local native_hook = lje.get_global("hook")
@@ -71,7 +88,7 @@ bring("ents")         bring("player")
 bring("CurTime")      bring("RealTime")  bring("FrameTime")
 bring("SysTime")
 
-bring("input")        bring("RunConsoleCommand")
+bring("input")        bring("RunConsoleCommand")  bring("gui")  bring("GetConVar")
 
 bring("weapons")      bring("killicon")  bring("language")
 
@@ -135,6 +152,24 @@ local function XPProgress()
 end
 
 local wasDead = false
+
+-- ── Death screen state ───────────────────────────────────────────
+-- v1.4: full Minecraft-style death overlay with clickable buttons.
+-- Cursor is shown only when the screen is up.
+local cursor_shown    = false   -- tracks gui.EnableScreenClicker state
+local death_click_lock = 0      -- 0 = idle, 1 = clicked (debounce)
+local _release_attack_at = 0    -- when > 0, send -attack at this CurTime()
+
+-- v1.4: simplified strings table. We hard-code English (MC original feel).
+-- Removed gmod_language detection because GetConVar wasn't bridging
+-- reliably in the LJE sandbox.
+local TXT = {
+    you_died    = "You Died!",
+    score       = "Score: ",
+    btn_respawn = "Respawn",
+    btn_quit    = "Title Screen",
+}
+
 
 -- ---------------- 5. SPRITE HELPERS ----------------
 local function Spr(mat, sx, sy, sw, sh, dx, dy, dw, dh, sz)
@@ -292,11 +327,17 @@ local function nuke_dlib_hud()
     end
 end
 
--- Run nuke now and once more 1 second later in case DLib loads after us
+-- Run nuke now and once more on the very first Think tick (in case
+-- DLib loads after us). Belt-and-suspenders: we set a sentinel flag
+-- AND call hRemove --- some LJE configs swallow the Remove silently,
+-- so the flag check is the real one-shot guarantee.
 nuke_dlib_hud()
+local _late_nuke_done = false
 hAdd("Think", "MCHUD_DLibLateNuke", function()
+    if _late_nuke_done then return end  -- belt
+    _late_nuke_done = true
     nuke_dlib_hud()
-    hRemove("Think", "MCHUD_DLibLateNuke")  -- one-shot
+    pcall(hRemove, "Think", "MCHUD_DLibLateNuke")  -- suspenders
 end)
 
 -- ---------------- 7. CROSSHAIR ----------------
@@ -666,6 +707,31 @@ hAdd("Think", "MCHUD_Think", function()
     elseif alive and wasDead then
         wasDead = false
     end
+
+    -- v1.3: cursor management for death screen
+    -- Show cursor on death, hide on respawn. Idempotent (only flips
+    -- when state actually changes).
+    if wasDead and not cursor_shown then
+        if gui and gui.EnableScreenClicker then
+            pcall(gui.EnableScreenClicker, true)
+            cursor_shown = true
+        end
+    elseif not wasDead and cursor_shown then
+        if gui and gui.EnableScreenClicker then
+            pcall(gui.EnableScreenClicker, false)
+            cursor_shown = false
+        end
+        death_click_lock = 0
+    end
+
+    -- v1.4: send -attack if we queued one from the Respawn button
+    if _release_attack_at > 0 and CurTime() >= _release_attack_at then
+        _release_attack_at = 0
+        if RunConsoleCommand then
+            pcall(RunConsoleCommand, "-attack")
+        end
+    end
+
     if not alive then return end
 
     local kills = lp:Frags()
@@ -700,17 +766,141 @@ hAdd("Think", "MCHUD_Think", function()
     end
 end)
 
+-- ---------------- 12-pre. DEATH SCREEN ----------------
+-- v1.3: full MC-style death overlay.
+--
+--   · Red-black translucent fullscreen tint
+--   · "You Died!" big red text with black drop shadow (MC style)
+--   · "Score: N" deaths counter in faded white
+--   · Two stacked buttons: Respawn / Title Screen
+--     - Hover changes brightness (MC button feel)
+--     - Click triggers the action ONCE (debounced)
+--   · Button hit testing uses gui.MouseX/Y (no vgui needed --- LJE-safe)
+--   · Cursor visibility is managed by §11 Think (we just draw here)
+--
+-- All text + button labels respect the USE_CHINESE language flag.
+--
+-- Layout (centered horizontally and vertically):
+--    [ 200px above center ]   "You Died!"  big red
+--    [  60px above center ]   "Score: N"   small grey
+--    [   0px below center ]   ─ button: Respawn       (300x40)
+--    [  60px below center ]   ─ button: Title Screen  (300x40)
+local function DrawDeathButton(label, bx, by, bw, bh, mx, my)
+    -- v1.4: button now uses widgets.png sprites for true MC look.
+    --
+    -- widgets.png button rows (256x256 sheet, from Mojang GuiButton.java):
+    --   y=46  disabled  (we never use this)
+    --   y=66  normal    (the grey one)
+    --   y=86  hover     (the highlighted/purple one)
+    -- All rows are 200x20 in source. We stretch to bw x bh.
+    --
+    -- MC text colors (also from Mojang source 0xFFFFBE):
+    --   normal: pure white  (255, 255, 255)
+    --   hover:  light yellow (255, 255, 190)
+
+    local hover = (mx >= bx and mx <= bx + bw and my >= by and my <= by + bh)
+    local sy    = hover and 86 or 66
+
+    -- Draw the button sprite (stretched to button rect)
+    Spr(MAT_WIDGETS, 0, sy, 200, 20, bx, by, bw, bh)
+
+    -- Label text with MC-style drop shadow
+    local txtCol = hover
+        and Color(255, 255, 190, 255)   -- hover: light yellow
+        or  Color(255, 255, 255, 255)   -- normal: white
+    DrawTextShadow(label, "DermaDefaultBold",
+        bx + bw / 2, by + bh / 2,
+        txtCol, 1, 1)
+
+    return hover
+end
+
+local function DrawDeathScreen(lp)
+    local sw, sh = ScrW(), ScrH()
+    local cx, cy = sw / 2, sh / 2
+
+    -- ── 1. Red-black translucent overlay ────────────────────────
+    -- MC uses ~80,0,0 with alpha around 180 for the death tint
+    surface.SetDrawColor(80, 0, 0, 180)
+    surface.DrawRect(0, 0, sw, sh)
+
+    -- ── 2. "You Died!" big text ────────────────────────────────
+    -- Drawn 200px above center, with 4px MC-style drop shadow
+    DrawText(TXT.you_died, "HudHintTextLarge",
+        cx + 4, cy - 200 + 4,
+        Color(100, 0, 0, 255), 1, 1)
+    DrawText(TXT.you_died, "HudHintTextLarge",
+        cx, cy - 200,
+        Color(255, 85, 85, 255), 1, 1)
+
+    -- ── 3. Death count ──────────────────────────────────────────
+    local deaths = (lp.Deaths and lp:Deaths()) or 0
+    DrawTextShadow(TXT.score .. tostring(deaths),
+        "DermaDefaultBold",
+        cx, cy - 100,
+        Color(220, 220, 220, 220), 1, 1)
+
+    -- ── 4. Buttons ──────────────────────────────────────────────
+    local mx = (gui and gui.MouseX and gui.MouseX()) or 0
+    local my = (gui and gui.MouseY and gui.MouseY()) or 0
+
+    -- v1.4: buttons enlarged to 600x60 (3x scale, matches MC HUD sc=3).
+    -- Spacing also bumped so buttons don't touch.
+    local bw, bh = 600, 60
+    local bx     = cx - bw / 2
+
+    -- Button 1: Respawn (just below center)
+    local hov_respawn = DrawDeathButton(TXT.btn_respawn,
+        bx, cy + 10, bw, bh, mx, my)
+
+    -- Button 2: Title Screen (below the first, with 20px gap)
+    local hov_quit = DrawDeathButton(TXT.btn_quit,
+        bx, cy + 90, bw, bh, mx, my)
+
+    -- ── 5. Click handling ───────────────────────────────────────
+    -- We debounce so one mouse-down triggers exactly one action.
+    -- Lock is reset when mouse is released, OR when player respawns
+    -- (handled in §11 Think).
+    local mouse_down = input and input.IsMouseDown
+                       and input.IsMouseDown(MOUSE_LEFT) or false
+
+    if mouse_down and death_click_lock == 0 then
+        death_click_lock = 1   -- lock: this click is "consumed"
+
+        if hov_respawn then
+            -- v1.4: simulate a real left-click (which is what triggers
+            -- respawn on every GMod gamemode). Equivalent to the player
+            -- clicking their mouse to respawn manually.
+            --
+            -- We send +attack then -attack ~50ms later. The exact delay
+            -- doesn't matter much; some gamemodes only check for the
+            -- press edge anyway.
+            if RunConsoleCommand then
+                pcall(RunConsoleCommand, "+attack")
+                -- We can't use timer.Simple reliably in LJE. Instead,
+                -- queue the release on the next Think tick using a flag.
+                _release_attack_at = CurTime() + 0.05
+            end
+        elseif hov_quit then
+            -- "Title Screen" = disconnect from server
+            if RunConsoleCommand then
+                pcall(RunConsoleCommand, "disconnect")
+            end
+        end
+
+    elseif not mouse_down and death_click_lock == 1 then
+        -- Mouse released, ready for next click
+        death_click_lock = 0
+    end
+end
+
 -- ---------------- 12. THE MAIN DRAW ----------------
 local function DoDraw()
     local lp = LocalPlayer()
     if not IsValid(lp) then return end
     if not lp:Alive() then
         if wasDead then
-            local sw, sh = ScrW(), ScrH()
-            surface.SetDrawColor(80, 0, 0, 160)
-            surface.DrawRect(0, 0, sw, sh)
-            DrawTextShadow("You Died!", "HudHintTextLarge",
-                sw/2, sh/2, Color(255, 50, 50, 255), 1, 1)
+            DrawDeathScreen(lp)
         end
         return
     end
@@ -876,7 +1066,7 @@ hAdd("HUDPaint", "MCHUD_RenderBackup", function()
 end)
 
 -- ---------------- 14. DONE ----------------
-lje.con_print("[MCHUD] v1.2 loaded successfully")
+lje.con_print("[MCHUD] v1.4 loaded successfully")
 if DEBUG then
     lje.con_print("[MCHUD] DEBUG mode is ON - set DEBUG=false in main.lua before sharing")
 end
