@@ -18,7 +18,7 @@ hunger, bubbles, and crosshair — visible only on your client.
 - **ljeutil** installed in your `.lje_scripts` folder
   (https://github.com/Eyoko1/lje-util)
 - **The MCHUD texture pack** (2 PNG files — see below)
-
+https://raw.githubusercontent.com/InventivetalentDev/minecraft-assets/1.12.2/assets/minecraft/textures/gui/icons.png
 ---
 
 ## Installation
