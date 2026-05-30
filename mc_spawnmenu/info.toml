@@ -1,0 +1,12 @@
+# ============================================================
+# MC_SpawnMenu - Minecraft creative-inventory style Q menu
+# LJE script package (companion to MCHUD)
+# ============================================================
+[script]
+name = "mc_spawnmenu"
+version = "1.0.0"
+author = "ba"
+url = "https://github.com/YOURNAME/mc_spawnmenu"
+dependencies = [
+    "Eyoko1.ljeutil"
+]

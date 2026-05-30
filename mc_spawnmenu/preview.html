@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MC 创造背包菜单 - 预览</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background:#1a1a1a; color:#eee; padding:24px;
+    display:flex; flex-direction:column; align-items:center; gap:20px;
+  }
+  h1 { font-size:20px; font-weight:600; }
+  .note { font-size:13px; color:#aaa; max-width:640px; text-align:center; line-height:1.6; }
+  /* fake game scene */
+  .scene {
+    position:relative; width:760px; height:480px; border-radius:8px;
+    overflow:hidden;
+    background:
+      linear-gradient(180deg,#6ea7d8 0%,#9cc3e0 55%,#6b8e3d 55%,#4a6b2a 100%);
+    box-shadow:0 8px 30px rgba(0,0,0,.5);
+  }
+  /* darken overlay like the menu */
+  .scene::after{
+    content:""; position:absolute; inset:0; background:rgba(0,0,0,.55);
+  }
+  /* the MC inventory panel */
+  .panel{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    z-index:2;
+    background:#c6c6c6;
+    border:3px solid #282828;
+    border-top-color:#fff; border-left-color:#fff;
+    border-right-color:#555; border-bottom-color:#555;
+    padding:10px 14px 14px;
+    image-rendering:pixelated;
+    box-shadow:0 0 0 3px #282828;
+  }
+  .title{ color:#404040; font-weight:700; font-size:15px; margin-bottom:6px;
+    text-shadow:1px 1px 0 #fff; display:flex; justify-content:space-between; }
+  .page{ color:#555; font-size:11px; font-weight:600; }
+  .grid{ display:grid; grid-template-columns:repeat(9, 34px); gap:0; }
+  .slot{
+    width:34px; height:34px; position:relative;
+    background:#8b8b8b;
+    border:2px solid #373737; border-top-color:#373737; border-left-color:#373737;
+    border-right:2px solid #ffffff80; border-bottom:2px solid #ffffff80;
+    display:flex; align-items:center; justify-content:center;
+    font-size:9px; color:#eee; cursor:pointer;
+  }
+  .slot .ic{ font-size:18px; line-height:1; }
+  .slot:hover::after{
+    content:""; position:absolute; inset:2px; background:rgba(255,255,255,.45);
+  }
+  .hint{ text-align:center; color:#4a4a4a; font-size:11px; font-weight:600;
+    margin-top:8px; text-shadow:1px 1px 0 #ffffff60; }
+  /* tooltip demo */
+  .tip{
+    position:absolute; z-index:3; left:430px; top:250px;
+    background:#100012; color:#fff; font-size:12px; font-weight:600;
+    padding:4px 8px; border-top:1px solid #5000a0; border-bottom:1px solid #5000a0;
+    pointer-events:none;
+  }
+  .legend{ font-size:12px; color:#bbb; max-width:640px; line-height:1.7; }
+  .legend b{ color:#fff; }
+  code{ background:#000; padding:1px 5px; border-radius:3px; color:#7fd; font-size:12px; }
+</style>
+</head>
+<body>
+  <h1>🎮 MC 创造背包风格的 Q 菜单 — 效果预览</h1>
+  <p class="note">这是用网页模拟的样子（实际游戏里用的是 Minecraft 原版 widgets.png 贴图，会更还原）。
+  按 <b>Q</b> 弹出，9 列格子展示服务器上所有可生成的武器，鼠标悬停显示名字，点一下就把武器给到手上。</p>
+
+  <div class="scene">
+    <div class="panel">
+      <div class="title"><span>Creative Inventory</span><span class="page">[1/3] 滚轮翻页</span></div>
+      <div class="grid" id="grid"></div>
+      <div class="hint">点击格子获得武器  -  Q 或 ESC 关闭</div>
+    </div>
+    <div class="tip">Pistol</div>
+  </div>
+
+  <div class="legend">
+    <b>实现要点：</b><br>
+    • 按 <b>Q</b> 拦截 GMod 默认的 <code>+menu</code>，改弹这个面板<br>
+    • 格子来自 <code>list.Get("Weapon")</code>，和 GMod 自带生成菜单同一个武器库<br>
+    • 点格子执行 <code>gm_giveswep &lt;武器类名&gt;</code>，直接给到手上（像 MC 创造模式拿物品）<br>
+    • <b>注意：</b>这个菜单会和服务器交互（生成是真实动作），不像 HUD 那样完全隐形
+  </div>
+
+<script>
+  // fake weapon-ish icons to suggest a populated grid
+  const icons = ["🔫","🪓","💣","🔪","🏹","⚔️","🔨","🧨","🪃","🛡️","💉","🔧",
+                 "🪚","⛏️","🥊","🧪","📦","🔦","🪤","🎯","🧲","⚡","🔥","❄️",
+                 "🌀","💥","🪦","☢️","🧯","🪙","📡","🛢️"];
+  const grid = document.getElementById("grid");
+  for (let i=0;i<54;i++){
+    const d=document.createElement("div");
+    d.className="slot";
+    if(i<icons.length){ d.innerHTML='<span class="ic">'+icons[i]+'</span>'; }
+    grid.appendChild(d);
+  }
+</script>
+</body>
+</html>
