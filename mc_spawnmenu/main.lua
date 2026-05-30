@@ -32,7 +32,7 @@
 -- ================================================================
 
 -- ---------------- 0. CONFIG ----------------
-local DEBUG = false            -- set true while testing, false to share
+local DEBUG = true             -- v1.1: ON so the panel shows counts while we debug
 
 -- Which bind opens the menu. GMod's Q is "+menu". If you'd rather use
 -- a different key, change this and rebind in-game. "+menu" = Q default.
@@ -90,6 +90,8 @@ bring("LocalPlayer") bring("IsValid") bring("IsColor")
 bring("CurTime") bring("RealTime") bring("FrameTime") bring("FrameNumber")
 bring("input") bring("RunConsoleCommand") bring("gui")
 bring("list") bring("weapons") bring("killicon") bring("language")
+bring("scripted_ents") bring("player_manager")
+bring("pairs") bring("ipairs") bring("pcall") bring("tostring") bring("tonumber")
 bring("isnumber") bring("isstring") bring("istable") bring("isfunction")
 bring("math") bring("string") bring("table")
 bring("MOUSE_LEFT") bring("MOUSE_RIGHT") bring("MOUSE_MIDDLE")
@@ -234,38 +236,133 @@ local function DrawWeaponIcon(cls, x, y, w, h)
 end
 
 -- ---------------- 7. BUILD THE ITEM LIST ----------------
--- We pull from list.Get("Weapon"), which is the same registry GMod's
--- own spawn menu reads. Only spawnable, non-admin-only entries.
-local items = {}          -- array of { class=, name= }
+-- v1.1: this is the part that was broken before. The old code only read
+-- list.Get("Weapon") and filtered hard on Spawnable. In the LJE sandbox
+-- list.Get often returns nil, so the menu was empty.
+--
+-- Now we:
+--   * try several ways to read each registry (Get / GetForEdit)
+--   * read FOUR categories: Weapon / Entity (SENT) / NPC / Vehicle
+--   * fall back to weapons.GetList() for weapons if the list table fails
+--   * relax filtering (keep entries unless explicitly AdminOnly)
+--
+-- Each category is its own array so we can show MC-style tabs.
+
+-- categories: id used for spawn cmd routing + tab label
+local CATS = {
+    { id = "weapon",  label = "Weapons", cmd = "gm_giveswep"   },
+    { id = "entity",  label = "Entities", cmd = "gm_spawnsent" },
+    { id = "npc",     label = "NPCs",     cmd = "gmod_spawnnpc"},
+    { id = "vehicle", label = "Vehicles", cmd = "gm_spawnvehicle"},
+}
+local catItems = { weapon = {}, entity = {}, npc = {}, vehicle = {} }
+local activeCat = "weapon"
 local itemsBuilt = false
 
-local function BuildItems()
-    items = {}
-    local reg = list and list.Get and list.Get("Weapon") or nil
-    if not reg then
-        dbg("list.Get('Weapon') unavailable")
-        itemsBuilt = true
-        return
+-- Read a list.* registry table by name, trying every API LJE might expose.
+local function readList(name)
+    if not list then return nil end
+    -- list.Get returns a copy in newer GMod; GetForEdit the live table
+    if list.Get then
+        local ok, t = pcall(list.Get, name)
+        if ok and istable(t) and next(t) ~= nil then return t end
     end
-    for class, t in pairs(reg) do
+    if list.GetForEdit then
+        local ok, t = pcall(list.GetForEdit, name)
+        if ok and istable(t) and next(t) ~= nil then return t end
+    end
+    return nil
+end
+
+local function phrase(pname, class)
+    if not pname or pname == "" then return class end
+    if string.sub(pname, 1, 1) == "#" and language and language.GetPhrase then
+        return language.GetPhrase(pname)
+    end
+    return pname
+end
+
+-- Generic harvester: walk a registry, push {class,name} into dest.
+-- keyIsClass = true means the table KEY is the class name (Weapon/NPC list),
+-- otherwise we look at t.ClassName / t.Class fields.
+local function harvest(reg, dest, keyIsClass)
+    if not istable(reg) then return 0 end
+    local n = 0
+    for k, t in pairs(reg) do
         if istable(t) then
-            local spawnable = t.Spawnable
-            local adminOnly = t.AdminOnly
-            if spawnable and not adminOnly then
-                local pname = t.PrintName
-                if not pname or pname == "" then pname = class end
-                if string.sub(pname, 1, 1) == "#" and language and language.GetPhrase then
-                    pname = language.GetPhrase(pname)
+            -- skip explicit admin-only stuff (we can't spawn it anyway on most servers)
+            if not t.AdminOnly then
+                local class = keyIsClass and k or (t.ClassName or t.Class or k)
+                local name  = phrase(t.PrintName or t.Name or t.Title, tostring(class))
+                if class and class ~= "" then
+                    table.insert(dest, { class = tostring(class), name = name })
+                    n = n + 1
                 end
-                table.insert(items, { class = class, name = pname })
+            end
+        elseif isstring(t) then
+            -- some lists map class -> printname string
+            table.insert(dest, { class = tostring(k), name = tostring(t) })
+            n = n + 1
+        end
+    end
+    return n
+end
+
+local function sortCat(arr)
+    table.sort(arr, function(a, b)
+        return string.lower(a.name) < string.lower(b.name)
+    end)
+end
+
+local function BuildItems()
+    catItems = { weapon = {}, entity = {}, npc = {}, vehicle = {} }
+
+    -- WEAPONS ----------------------------------------------------------
+    local wreg = readList("Weapon")
+    local wn = harvest(wreg, catItems.weapon, true)
+    -- fallback: weapons.GetList() returns an array of swep tables
+    if wn == 0 and weapons and weapons.GetList then
+        local ok, all = pcall(weapons.GetList)
+        if ok and istable(all) then
+            for _, sw in pairs(all) do
+                if istable(sw) and not sw.AdminOnly then
+                    local class = sw.ClassName or sw.Classname
+                    if class then
+                        table.insert(catItems.weapon,
+                            { class = class, name = phrase(sw.PrintName, class) })
+                        wn = wn + 1
+                    end
+                end
             end
         end
     end
-    table.sort(items, function(a, b)
-        return string.lower(a.name) < string.lower(b.name)
-    end)
-    itemsBuilt = true
-    dbg("built item list:", #items, "spawnable weapons")
+
+    -- ENTITIES (SENTs) -------------------------------------------------
+    local en = harvest(readList("SpawnableEntities"), catItems.entity, true)
+
+    -- NPCs -------------------------------------------------------------
+    local nn = harvest(readList("NPC"), catItems.npc, true)
+
+    -- VEHICLES ---------------------------------------------------------
+    local vn = harvest(readList("Vehicles"), catItems.vehicle, true)
+
+    sortCat(catItems.weapon)
+    sortCat(catItems.entity)
+    sortCat(catItems.npc)
+    sortCat(catItems.vehicle)
+
+    itemsBuilt = (wn + en + nn + vn) > 0
+    dbg("built lists -> weapons:", wn, "entities:", en, "npcs:", nn, "vehicles:", vn)
+    if not itemsBuilt then
+        dbg("ALL LISTS EMPTY - list.* table likely not bridged in LJE")
+    end
+end
+
+-- helper used by the rest of the file
+local function curItems() return catItems[activeCat] or {} end
+local function curCmd()
+    for _, c in ipairs(CATS) do if c.id == activeCat then return c.cmd end end
+    return "gm_giveswep"
 end
 
 -- ---------------- 8. MENU STATE ----------------
@@ -277,7 +374,7 @@ local hoverIndex    = -1
 
 local function PerPage() return COLS * ROWS end
 local function TotalPages()
-    return math.max(1, math.ceil(#items / PerPage()))
+    return math.max(1, math.ceil(#curItems() / PerPage()))
 end
 
 local function SetCursor(state)
@@ -406,16 +503,40 @@ local function DoDraw()
     local my = (gui and gui.MouseY and gui.MouseY()) or 0
     hoverIndex = -1
 
+    -- ---- category tabs (MC creative-inventory style, across the top) ----
+    -- Drawn as little buttons just under the title; click to switch.
+    local tabY = py - math.floor(SLOT_SCALE * 12)
+    local tabH = math.floor(SLOT_SCALE * 12)
+    local tabW = math.floor(panelW / #CATS)
+    local clickedTab = nil
+    for i, c in ipairs(CATS) do
+        local tx = px + (i - 1) * tabW
+        local isActive = (c.id == activeCat)
+        local hov = (mx >= tx and mx <= tx + tabW and my >= tabY and my <= tabY + tabH)
+        -- tab face
+        surface.SetDrawColor(isActive and 198 or 150, isActive and 198 or 150,
+            isActive and 198 or 150, 255)
+        surface.DrawRect(tx, tabY, tabW - 2, tabH)
+        surface.SetDrawColor(255, 255, 255, isActive and 255 or 120)
+        surface.DrawRect(tx, tabY, tabW - 2, 2)            -- top highlight
+        local n = #(catItems[c.id] or {})
+        DrawText(c.label .. " (" .. n .. ")", "DermaDefaultBold",
+            tx + (tabW - 2) / 2, tabY + tabH / 2,
+            Color(40, 40, 40, isActive and 255 or 200), 1, 1)
+        if hov then clickedTab = c.id end
+    end
+
     local gridX = px + panelPadX
     local gridY = py + panelPadTop
 
+    local list_now = curItems()
     local startIdx = page * PerPage()
     for r = 0, ROWS - 1 do
         for c = 0, COLS - 1 do
             local cellX = gridX + c * slot
             local cellY = gridY + r * slot
             local idx = startIdx + r * COLS + c + 1   -- 1-based
-            local data = items[idx]
+            local data = list_now[idx]
 
             -- slot background (sunken MC cell): dark border + grey fill
             surface.SetDrawColor(139, 139, 139, 255)
@@ -445,9 +566,17 @@ local function DoDraw()
         end
     end
 
+    -- empty-state message so a blank grid is never a mystery
+    if #list_now == 0 then
+        DrawText("(this category is empty - see LJE console for [MCSPAWN] counts)",
+            "DermaDefaultBold",
+            px + panelW / 2, gridY + gridH / 2,
+            Color(90, 30, 30, 230), 1, 1)
+    end
+
     -- tooltip for hovered item (MC style: name in a small dark box)
-    if hoverIndex > 0 and items[hoverIndex] then
-        local label = items[hoverIndex].name
+    if hoverIndex > 0 and list_now[hoverIndex] then
+        local label = list_now[hoverIndex].name
         surface.SetFont("DermaDefaultBold")
         local tw, th = surface.GetTextSize(label)
         local boxX, boxY = mx + 14, my + 14
@@ -472,13 +601,18 @@ local function DoDraw()
 
     if mouseDown and clickLock == 0 then
         clickLock = 1
-        if hoverIndex > 0 and items[hoverIndex] then
-            local cls = items[hoverIndex].class
+        if clickedTab then
+            -- switch category, reset to first page
+            activeCat = clickedTab
+            page = 0
+            dbg("switched category ->", activeCat)
+        elseif hoverIndex > 0 and list_now[hoverIndex] then
+            local cls = list_now[hoverIndex].class
+            local cmd = curCmd()
             if RunConsoleCommand then
-                -- gm_giveswep = give to hand (MC creative "pick" feel)
-                pcall(RunConsoleCommand, "gm_giveswep", cls)
+                pcall(RunConsoleCommand, cmd, cls)
             end
-            dbg("gave weapon:", cls)
+            dbg("spawn:", cmd, cls)
         end
     elseif not mouseDown and clickLock == 1 then
         clickLock = 0
