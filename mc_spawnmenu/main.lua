@@ -54,10 +54,32 @@ end
 
 dbg("v1.0 main.lua starting")
 
+-- Helper: retrieve globals across new/old LJE & ljeutil versions
+local function get_global(name)
+    if lje and lje.get_global then
+        local ok, v = pcall(lje.get_global, name)
+        if ok and v ~= nil then return v end
+    end
+    if lje and lje.env and lje.env.get_global then
+        local ok, v = pcall(lje.env.get_global, name)
+        if ok and v ~= nil then return v end
+    end
+    if _G[name] ~= nil then return _G[name] end
+    local v = rawget(_G, name)
+    if v ~= nil then return v end
+    if lje and lje.util and lje.util.get_registry then
+        local ok, reg = pcall(lje.util.get_registry)
+        if ok and reg and reg[name] ~= nil then
+            return reg[name]
+        end
+    end
+    return nil
+end
+
 -- ---------------- 1. NATIVE HOOK BYPASS ----------------
 -- Same trick MCHUD uses: capture the real hook table at load time so
 -- DLib's wrapper never sees our registrations.
-local native_hook = lje.get_global("hook")
+local native_hook = get_global("hook")
 if not native_hook or not native_hook.Add then
     lje.con_print("[MCSPAWN] FATAL: native hook table missing")
     return
@@ -78,7 +100,7 @@ dbg("native hook table captured")
 
 -- ---------------- 2. PULL ENGINE GLOBALS ----------------
 local function bring(name)
-    local v = lje.get_global(name)
+    local v = get_global(name)
     if v ~= nil then rawset(_G, name, v) end
     return v
 end
@@ -649,6 +671,8 @@ end
 local last_drawn_frame = -1
 local function frame_id()
     if FrameNumber then return FrameNumber() end
+    local fn = get_global("FrameNumber")
+    if fn then return fn() end
     return math.floor(CurTime() * 1000)
 end
 local function GuardedDraw(path)
@@ -662,6 +686,9 @@ local function GuardedDraw(path)
 end
 
 if hook and hook.pre then
+    hook.pre("lje-util/render", "MCSPAWN_Render", function()
+        GuardedDraw("lje-util/render")
+    end)
     hook.pre("ljeutil/render", "MCSPAWN_Render", function()
         GuardedDraw("ljeutil/render")
     end)
